@@ -269,6 +269,10 @@ def main_cli(
     else:
         os.environ["MCP_DEBUG"] = "false"
 
+    # Set PORT environment variable for agent creation
+    os.environ["PORT"] = str(port)
+    logger.info(f"Set PORT environment variable to {port}")
+
     # Determine if the TUI should be active
     # TUI is active if console logging is disabled AND --no-tui is NOT passed AND not in debug mode
     from .core.config import (
