@@ -155,6 +155,76 @@ registerTool(
       const createdAt = new Date().toISOString();
       const status = 'pending';
       
+      // RAG Pre-Check for Task Placement
+      let finalParentTaskId = actualParentTaskId;
+      let finalDependsOnTasks = depends_on_tasks;
+      let validationMessage = '';
+      
+      if (ENABLE_TASK_PLACEMENT_RAG) {
+        if (MCP_DEBUG) {
+          console.log(`🧠 Running RAG validation for task: ${task_title}`);
+        }
+        
+        try {
+          const validationResult = await validateTaskPlacement(
+            task_title,
+            task_description,
+            actualParentTaskId,
+            depends_on_tasks,
+            requestingAgentId,
+            token
+          );
+          
+          const suggestionMessage = formatSuggestionsForAgent(
+            validationResult,
+            actualParentTaskId,
+            depends_on_tasks
+          );
+          
+          // Check for denial
+          if (validationResult.status === 'denied' && !ALLOW_RAG_OVERRIDE) {
+            return {
+              content: [{
+                type: 'text' as const,
+                text: `❌ Task creation BLOCKED by RAG validation:\n${suggestionMessage}`
+              }],
+              isError: true
+            };
+          }
+          
+          // Process validation results
+          if (validationResult.status !== 'approved') {
+            validationMessage = `\n🧠 RAG Validation (${validationResult.status}):\n${suggestionMessage}\n`;
+            
+            // For agents, automatically accept suggestions
+            const suggestions = validationResult.suggestions;
+            if (suggestions.parent_task !== undefined) {
+              finalParentTaskId = suggestions.parent_task;
+              validationMessage += `✓ Applied suggested parent: ${finalParentTaskId}\n`;
+            }
+            if (suggestions.dependencies) {
+              finalDependsOnTasks = suggestions.dependencies;
+              validationMessage += `✓ Applied suggested dependencies: ${finalDependsOnTasks.join(', ')}\n`;
+            }
+            
+            if (MCP_DEBUG) {
+              console.log(`📝 Agent ${requestingAgentId} automatically accepted RAG suggestions`);
+            }
+            
+            // Check if escalation is needed
+            if (shouldEscalateToAdmin(validationResult, requestingAgentId)) {
+              console.warn(`Task ${newTaskId} flagged for admin review: ${validationResult.message}`);
+              validationMessage += '⚠️ Task flagged for admin review\n';
+            }
+          } else {
+            validationMessage = '\n✅ RAG validation approved placement\n';
+          }
+        } catch (error) {
+          console.warn('RAG validation failed:', error);
+          validationMessage = `\n⚠️ RAG validation failed: ${error instanceof Error ? error.message : String(error)}\n`;
+        }
+      }
+      
       // Begin transaction
       const transaction = db.transaction(() => {
         // Insert new task
