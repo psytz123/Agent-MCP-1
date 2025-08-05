@@ -667,16 +667,15 @@ export async function indexTaskData(taskId: string, taskData: any): Promise<void
     const content = formatTaskForEmbedding(taskData);
 
     // Generate chunks (tasks are usually small, so one chunk is fine)
-    const chunks = simpleChunker(content, 'task', taskId);
+    const textChunks = simpleChunker(content, 500, 50);
     
-    if (chunks.length === 0) {
+    if (textChunks.length === 0) {
       console.warn(`No chunks generated for task ${taskId}`);
       return;
     }
 
     // Generate embeddings
-    const texts = chunks.map(chunk => chunk.text);
-    const embeddings = await generateEmbeddings(texts);
+    const embeddings = await generateEmbeddings(textChunks);
     
     if (!embeddings || embeddings.length === 0) {
       console.warn(`No embeddings generated for task ${taskId}`);
@@ -685,13 +684,13 @@ export async function indexTaskData(taskId: string, taskData: any): Promise<void
 
     // Insert chunks with embeddings
     let successCount = 0;
-    for (let i = 0; i < chunks.length; i++) {
-      const chunk = chunks[i];
+    for (let i = 0; i < textChunks.length; i++) {
+      const chunkText = textChunks[i];
       const embedding = embeddings[i];
       
-      if (embedding) {
+      if (embedding && chunkText) {
         const chunkId = await insertChunkWithEmbedding(
-          chunk.text,
+          chunkText,
           'task',
           taskId,
           {
