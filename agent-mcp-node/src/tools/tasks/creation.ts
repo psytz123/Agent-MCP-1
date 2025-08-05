@@ -665,9 +665,9 @@ async function createSingleUnassignedTask(taskData: {
       taskData.priority,
       createdAt,
       createdAt,
-      taskData.parent_task_id || null,
+      finalParentTaskId || null,
       JSON.stringify([]), // Empty child tasks initially
-      JSON.stringify(taskData.depends_on_tasks),
+      JSON.stringify(finalDependsOnTasks),
       JSON.stringify([])   // Empty notes initially
     );
     
