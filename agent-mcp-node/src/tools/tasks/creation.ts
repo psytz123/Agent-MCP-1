@@ -167,7 +167,7 @@ registerTool(
             // For agents, automatically accept suggestions
             const suggestions = validationResult.suggestions;
             if (suggestions.parent_task !== undefined) {
-              finalParentTaskId = suggestions.parent_task;
+              finalParentTaskId = suggestions.parent_task || undefined;
               validationMessage += `✓ Applied suggested parent: ${finalParentTaskId}\n`;
             }
             if (suggestions.dependencies) {
