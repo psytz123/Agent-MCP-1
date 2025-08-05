@@ -267,8 +267,8 @@ registerTool(
         logTaskAction(requestingAgentId, 'created_self_task', newTaskId, {
           title: task_title,
           priority,
-          parent_task: actualParentTaskId,
-          depends_on_count: depends_on_tasks.length
+          parent_task: finalParentTaskId,
+          depends_on_count: finalDependsOnTasks.length
         });
         
         return newTaskId;
