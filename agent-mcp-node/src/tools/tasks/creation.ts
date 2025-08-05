@@ -245,9 +245,9 @@ registerTool(
           priority,
           createdAt,
           createdAt,
-          actualParentTaskId,
+          finalParentTaskId, // Use validated parent
           JSON.stringify([]), // Empty child tasks initially
-          JSON.stringify(depends_on_tasks),
+          JSON.stringify(finalDependsOnTasks), // Use validated dependencies
           JSON.stringify([])   // Empty notes initially
         );
         
