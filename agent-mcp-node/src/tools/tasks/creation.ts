@@ -593,32 +593,52 @@ async function createSingleUnassignedTask(taskData: {
       }
     }
     
-    // Smart task placement: Suggest parent when trying to create root task with existing roots
-    if (!taskData.parent_task_id) {
-      const rootCheck = db.prepare('SELECT task_id, title, status FROM tasks WHERE parent_task IS NULL ORDER BY created_at DESC LIMIT 1').get();
+    // RAG Pre-Check for Task Placement
+    let finalParentTaskId = taskData.parent_task_id;
+    let finalDependsOnTasks = taskData.depends_on_tasks;
+    
+    if (ENABLE_TASK_PLACEMENT_RAG) {
+      if (MCP_DEBUG) {
+        console.log(`🧠 Running RAG validation for unassigned task: ${taskData.title}`);
+      }
       
-      if (rootCheck) {
-        const existingPhase = rootCheck as any;
+      try {
+        const validationResult = await validateTaskPlacement(
+          taskData.title,
+          taskData.description,
+          taskData.parent_task_id,
+          taskData.depends_on_tasks,
+          'admin',
+          'admin_token'
+        );
         
-        // Get smart parent suggestions using RAG if available, otherwise use similarity
-        const suggestions = await getSmartParentSuggestions(db, taskData.title, taskData.description);
+        const suggestionMessage = formatSuggestionsForAgent(
+          validationResult,
+          taskData.parent_task_id,
+          taskData.depends_on_tasks
+        );
         
-        let suggestionText = '\n\n💡 **Smart Parent Suggestions:**\n';
-        if (suggestions.length > 0) {
-          suggestions.forEach((suggestion: any, i: number) => {
-            suggestionText += `  ${i + 1}. ${suggestion.task_id}: ${suggestion.title}\n`;
-            suggestionText += `     Status: ${suggestion.status} | Priority: ${suggestion.priority} | ${suggestion.reason}\n`;
-          });
-        } else {
-          suggestionText += `  Consider using parent_task_id="${existingPhase.task_id}" to add to current phase\n`;
-          suggestionText += `  Or complete existing tasks to start a new phase\n`;
+        // Check for denial
+        if (validationResult.status === 'denied' && !ALLOW_RAG_OVERRIDE) {
+          throw new Error(`Task creation BLOCKED by RAG validation:\n${suggestionMessage}`);
         }
         
-        suggestionText += '\n🧠 **Use RAG for smarter suggestions:** The system can analyze task content for optimal placement.';
+        // Apply suggestions automatically
+        const suggestions = validationResult.suggestions;
+        if (suggestions.parent_task !== undefined) {
+          finalParentTaskId = suggestions.parent_task;
+        }
+        if (suggestions.dependencies) {
+          finalDependsOnTasks = suggestions.dependencies;
+        }
         
-        throw new Error(`Task placement guidance needed. Root task "${existingPhase.title}" (${existingPhase.task_id}) already exists.\n\n` +
-          `Every task except the first must have a parent for better organization.${suggestionText}\n\n` +
-          `Use 'view_tasks' to see all available parent options.`);
+        if (MCP_DEBUG && validationResult.status !== 'approved') {
+          console.log(`📝 RAG suggestions applied for unassigned task ${taskData.title}`);
+        }
+        
+      } catch (error) {
+        console.warn('RAG validation failed for unassigned task:', error);
+        // For unassigned tasks, we can be more permissive
       }
     }
     
