@@ -687,9 +687,34 @@ async function createSingleUnassignedTask(taskData: {
     logTaskAction('admin', 'created_unassigned_task', newTaskId, {
       title: taskData.title,
       priority: taskData.priority,
-      parent_task: taskData.parent_task_id,
-      depends_on_count: taskData.depends_on_tasks.length
+      parent_task: finalParentTaskId,
+      depends_on_count: finalDependsOnTasks.length
     });
+    
+    // Index the new task for RAG
+    try {
+      const taskDataForIndexing = {
+        task_id: newTaskId,
+        title: taskData.title,
+        description: taskData.description,
+        assigned_to: null,
+        created_by: 'admin',
+        status: status,
+        priority: taskData.priority,
+        created_at: createdAt,
+        updated_at: createdAt,
+        parent_task: finalParentTaskId,
+        depends_on_tasks: finalDependsOnTasks,
+        notes: []
+      };
+      
+      // Start indexing asynchronously (fire and forget)
+      indexTaskData(newTaskId, taskDataForIndexing).catch(error => {
+        console.error(`Failed to index unassigned task ${newTaskId}:`, error);
+      });
+    } catch (error) {
+      console.warn(`Task indexing setup failed for unassigned task ${newTaskId}:`, error);
+    }
     
     return newTaskId;
     
