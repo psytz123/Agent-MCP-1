@@ -252,14 +252,14 @@ registerTool(
         );
         
         // Update parent task's child_tasks if parent exists
-        if (actualParentTaskId) {
-          const parentTask = db.prepare('SELECT child_tasks FROM tasks WHERE task_id = ?').get(actualParentTaskId);
+        if (finalParentTaskId) {
+          const parentTask = db.prepare('SELECT child_tasks FROM tasks WHERE task_id = ?').get(finalParentTaskId);
           if (parentTask) {
             const childTasks = JSON.parse((parentTask as any).child_tasks || '[]');
             childTasks.push(newTaskId);
             
             const updateParent = db.prepare('UPDATE tasks SET child_tasks = ?, updated_at = ? WHERE task_id = ?');
-            updateParent.run(JSON.stringify(childTasks), createdAt, actualParentTaskId);
+            updateParent.run(JSON.stringify(childTasks), createdAt, finalParentTaskId);
           }
         }
         
