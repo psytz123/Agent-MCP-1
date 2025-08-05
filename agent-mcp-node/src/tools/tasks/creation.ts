@@ -276,6 +276,31 @@ registerTool(
       
       const taskId = transaction();
       
+      // Index the new task for RAG
+      try {
+        const taskDataForIndexing = {
+          task_id: taskId,
+          title: task_title,
+          description: task_description,
+          assigned_to: requestingAgentId,
+          created_by: requestingAgentId,
+          status: status,
+          priority: priority,
+          created_at: createdAt,
+          updated_at: createdAt,
+          parent_task: finalParentTaskId,
+          depends_on_tasks: finalDependsOnTasks,
+          notes: []
+        };
+        
+        // Start indexing asynchronously (fire and forget)
+        indexTaskData(taskId, taskDataForIndexing).catch(error => {
+          console.error(`Failed to index task ${taskId}:`, error);
+        });
+      } catch (error) {
+        console.warn(`Task indexing setup failed for ${taskId}:`, error);
+      }
+      
       const response = [
         `✅ **Task '${taskId}' Created Successfully**`,
         '',
@@ -288,12 +313,17 @@ registerTool(
         ''
       ];
       
-      if (actualParentTaskId) {
-        response.push(`**Parent Task:** ${actualParentTaskId}`);
+      if (finalParentTaskId) {
+        response.push(`**Parent Task:** ${finalParentTaskId}`);
       }
       
-      if (depends_on_tasks.length > 0) {
-        response.push(`**Dependencies:** ${depends_on_tasks.join(', ')}`);
+      if (finalDependsOnTasks.length > 0) {
+        response.push(`**Dependencies:** ${finalDependsOnTasks.join(', ')}`);
+      }
+      
+      // Add RAG validation info
+      if (validationMessage) {
+        response.push(validationMessage);
       }
       
       response.push('', '🎯 Task is ready for work');
