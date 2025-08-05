@@ -810,7 +810,7 @@ async function createSingleTask(agentId: string, taskData: any, notes?: string) 
           // Apply suggestions automatically
           const suggestions = validationResult.suggestions;
           if (suggestions.parent_task !== undefined) {
-            finalParentTaskId = suggestions.parent_task;
+            finalParentTaskId = suggestions.parent_task || undefined;
             validationMessage += `✓ Applied suggested parent: ${finalParentTaskId}\n`;
           }
           if (suggestions.dependencies) {
