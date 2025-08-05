@@ -4,7 +4,7 @@
 import { z } from 'zod';
 import { registerTool } from '../registry.js';
 import { getDbConnection } from '../../db/connection.js';
-import { MCP_DEBUG } from '../../core/config.js';
+import { MCP_DEBUG, ENABLE_TASK_PLACEMENT_RAG, ALLOW_RAG_OVERRIDE } from '../../core/config.js';
 import { verifyToken, getAgentId, validateAgentToken } from '../../core/auth.js';
 import { globalState } from '../../core/globals.js';
 import { 
@@ -14,6 +14,8 @@ import {
   validateTaskPriority,
   analyzeAgentWorkload 
 } from './core.js';
+import { validateTaskPlacement, formatSuggestionsForAgent, shouldEscalateToAdmin } from '../../features/task_placement/index.js';
+import { indexTaskData } from '../../features/rag/indexing.js';
 
 // Create Self Task Tool (for agents to create subtasks)
 registerTool(
