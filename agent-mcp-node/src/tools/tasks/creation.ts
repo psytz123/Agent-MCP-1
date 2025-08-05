@@ -849,14 +849,14 @@ async function createSingleTask(agentId: string, taskData: any, notes?: string) 
       );
       
       // Update parent if specified
-      if (taskData.parent_task_id) {
-        const parent = db.prepare('SELECT child_tasks FROM tasks WHERE task_id = ?').get(taskData.parent_task_id);
+      if (finalParentTaskId) {
+        const parent = db.prepare('SELECT child_tasks FROM tasks WHERE task_id = ?').get(finalParentTaskId);
         if (parent) {
           const childTasks = JSON.parse((parent as any).child_tasks || '[]');
           childTasks.push(taskId);
           
           const updateParent = db.prepare('UPDATE tasks SET child_tasks = ?, updated_at = ? WHERE task_id = ?');
-          updateParent.run(JSON.stringify(childTasks), timestamp, taskData.parent_task_id);
+          updateParent.run(JSON.stringify(childTasks), timestamp, finalParentTaskId);
         }
       }
       
