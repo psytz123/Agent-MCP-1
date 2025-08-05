@@ -712,7 +712,7 @@ export async function indexTaskData(taskId: string, taskData: any): Promise<void
     }
 
     if (MCP_DEBUG) {
-      console.log(`✅ Indexed task ${taskId}: ${successCount}/${chunks.length} chunks`);
+      console.log(`✅ Indexed task ${taskId}: ${successCount}/${textChunks.length} chunks`);
     }
 
     // Update last indexed time for tasks
