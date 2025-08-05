@@ -872,10 +872,52 @@ async function createSingleTask(agentId: string, taskData: any, notes?: string) 
     
     const newTaskId = transaction();
     
+    // Index the new task for RAG
+    try {
+      const taskDataForIndexing = {
+        task_id: newTaskId,
+        title: taskData.title,
+        description: taskData.description,
+        assigned_to: agentId,
+        created_by: 'admin',
+        status: 'pending',
+        priority: taskData.priority,
+        created_at: timestamp,
+        updated_at: timestamp,
+        parent_task: finalParentTaskId,
+        depends_on_tasks: finalDependsOnTasks,
+        notes: notes ? [{ content: notes, timestamp, agent_id: 'admin' }] : []
+      };
+      
+      // Start indexing asynchronously (fire and forget)
+      indexTaskData(newTaskId, taskDataForIndexing).catch(error => {
+        console.error(`Failed to index task ${newTaskId}:`, error);
+      });
+    } catch (error) {
+      console.warn(`Task indexing setup failed for ${newTaskId}:`, error);
+    }
+    
+    let responseText = `✅ **Task '${newTaskId}' Created and Assigned**\n\n**Details:**\n- Title: ${taskData.title}\n- Priority: ${taskData.priority}\n- Assigned to: ${agentId}\n- Status: pending`;
+    
+    if (finalParentTaskId) {
+      responseText += `\n- Parent Task: ${finalParentTaskId}`;
+    }
+    
+    if (finalDependsOnTasks.length > 0) {
+      responseText += `\n- Dependencies: ${finalDependsOnTasks.join(', ')}`;
+    }
+    
+    // Add RAG validation info
+    if (validationMessage) {
+      responseText += validationMessage;
+    }
+    
+    responseText += '\n\n🎯 Task is ready for work';
+    
     return {
       content: [{
         type: 'text' as const,
-        text: `✅ **Task '${newTaskId}' Created and Assigned**\n\n**Details:**\n- Title: ${taskData.title}\n- Priority: ${taskData.priority}\n- Assigned to: ${agentId}\n- Status: pending\n\n🎯 Task is ready for work`
+        text: responseText
       }]
     };
     
