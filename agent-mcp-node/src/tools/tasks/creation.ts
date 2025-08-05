@@ -842,9 +842,9 @@ async function createSingleTask(agentId: string, taskData: any, notes?: string) 
         taskData.priority,
         timestamp,
         timestamp,
-        taskData.parent_task_id || null,
+        finalParentTaskId || null,
         JSON.stringify([]),
-        JSON.stringify(taskData.depends_on_tasks || []),
+        JSON.stringify(finalDependsOnTasks),
         JSON.stringify(initialNotes)
       );
       
