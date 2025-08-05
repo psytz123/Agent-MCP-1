@@ -672,14 +672,14 @@ async function createSingleUnassignedTask(taskData: {
     );
     
     // Update parent task's child_tasks if parent exists
-    if (taskData.parent_task_id) {
-      const parentTask = db.prepare('SELECT child_tasks FROM tasks WHERE task_id = ?').get(taskData.parent_task_id);
+    if (finalParentTaskId) {
+      const parentTask = db.prepare('SELECT child_tasks FROM tasks WHERE task_id = ?').get(finalParentTaskId);
       if (parentTask) {
         const childTasks = JSON.parse((parentTask as any).child_tasks || '[]');
         childTasks.push(newTaskId);
         
         const updateParent = db.prepare('UPDATE tasks SET child_tasks = ?, updated_at = ? WHERE task_id = ?');
-        updateParent.run(JSON.stringify(childTasks), createdAt, taskData.parent_task_id);
+        updateParent.run(JSON.stringify(childTasks), createdAt, finalParentTaskId);
       }
     }
     
