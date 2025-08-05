@@ -646,4 +646,151 @@ export function getIndexingStats(): {
   }
 }
 
+/**
+ * Index a single task into the RAG system.
+ * 
+ * @param taskId Task ID to index
+ * @param taskData Complete task data dictionary
+ */
+export async function indexTaskData(taskId: string, taskData: any): Promise<void> {
+  if (!isVssLoadable()) {
+    console.warn('Cannot index task - VSS not available');
+    return;
+  }
+
+  if (MCP_DEBUG) {
+    console.log(`📝 Indexing task: ${taskId}`);
+  }
+
+  try {
+    // Format task for embedding
+    const content = formatTaskForEmbedding(taskData);
+
+    // Generate chunks (tasks are usually small, so one chunk is fine)
+    const chunks = simpleChunker(content, 'task', taskId);
+    
+    if (chunks.length === 0) {
+      console.warn(`No chunks generated for task ${taskId}`);
+      return;
+    }
+
+    // Generate embeddings
+    const texts = chunks.map(chunk => chunk.text);
+    const embeddings = await generateEmbeddings(texts);
+    
+    if (!embeddings || embeddings.length === 0) {
+      console.warn(`No embeddings generated for task ${taskId}`);
+      return;
+    }
+
+    // Insert chunks with embeddings
+    let successCount = 0;
+    for (let i = 0; i < chunks.length; i++) {
+      const chunk = chunks[i];
+      const embedding = embeddings[i];
+      
+      if (embedding) {
+        const chunkId = await insertChunkWithEmbedding(
+          chunk.text,
+          'task',
+          taskId,
+          {
+            task_id: taskId,
+            title: taskData.title,
+            status: taskData.status,
+            priority: taskData.priority,
+            assigned_to: taskData.assigned_to,
+            created_by: taskData.created_by,
+            parent_task: taskData.parent_task || null
+          },
+          embedding
+        );
+        
+        if (chunkId) {
+          successCount++;
+        }
+      }
+    }
+
+    if (MCP_DEBUG) {
+      console.log(`✅ Indexed task ${taskId}: ${successCount}/${chunks.length} chunks`);
+    }
+
+    // Update last indexed time for tasks
+    updateIndexingMetadata({
+      last_indexed_tasks: new Date().toISOString()
+    });
+
+  } catch (error) {
+    console.error(`Error indexing task ${taskId}:`, error);
+  }
+}
+
+/**
+ * Format task data into text suitable for embedding.
+ * 
+ * @param taskData Task data dictionary
+ * @returns Formatted text for embedding
+ */
+function formatTaskForEmbedding(taskData: any): string {
+  const parts = [
+    `Task ID: ${taskData.task_id || 'unknown'}`,
+    `Title: ${taskData.title || 'Untitled'}`,
+    `Description: ${taskData.description || 'No description'}`,
+    `Status: ${taskData.status || 'unknown'}`,
+    `Priority: ${taskData.priority || 'medium'}`,
+    `Assigned to: ${taskData.assigned_to || 'unassigned'}`,
+    `Created by: ${taskData.created_by || 'unknown'}`
+  ];
+
+  if (taskData.parent_task) {
+    parts.push(`Parent task: ${taskData.parent_task}`);
+  } else {
+    parts.push('Parent task: None (root level)');
+  }
+
+  // Handle dependencies
+  let dependsOn = taskData.depends_on_tasks || [];
+  if (typeof dependsOn === 'string') {
+    try {
+      dependsOn = JSON.parse(dependsOn);
+    } catch {
+      dependsOn = [];
+    }
+  }
+
+  if (Array.isArray(dependsOn) && dependsOn.length > 0) {
+    parts.push(`Dependencies: ${dependsOn.join(', ')}`);
+  } else {
+    parts.push('Dependencies: None');
+  }
+
+  // Add metadata
+  parts.push(
+    `Created: ${taskData.created_at || 'unknown'}`,
+    `Updated: ${taskData.updated_at || 'unknown'}`,
+    `Type: Task`,
+    `Context: Project task management and coordination`
+  );
+
+  // Add notes if available
+  let notes = taskData.notes || [];
+  if (typeof notes === 'string') {
+    try {
+      notes = JSON.parse(notes);
+    } catch {
+      notes = [];
+    }
+  }
+
+  if (Array.isArray(notes) && notes.length > 0) {
+    const notesText = notes
+      .map((note: any) => `Note: ${note.content || note}`)
+      .join(' ');
+    parts.push(notesText);
+  }
+
+  return parts.join('\n');
+}
+
 console.log('✅ RAG indexing pipeline loaded');
