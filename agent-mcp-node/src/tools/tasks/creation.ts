@@ -746,12 +746,76 @@ function createMultipleTasks(agentId: string, tasks: any[], notes?: string) {
   };
 }
 
-function createSingleTask(agentId: string, taskData: any, notes?: string) {
+async function createSingleTask(agentId: string, taskData: any, notes?: string) {
   const db = getDbConnection();
   
   try {
     const taskId = generateTaskId();
     const timestamp = new Date().toISOString();
+    
+    // RAG Pre-Check for Task Placement
+    let finalParentTaskId = taskData.parent_task_id;
+    let finalDependsOnTasks = taskData.depends_on_tasks || [];
+    let validationMessage = '';
+    
+    if (ENABLE_TASK_PLACEMENT_RAG) {
+      if (MCP_DEBUG) {
+        console.log(`🧠 Running RAG validation for assigned task: ${taskData.title}`);
+      }
+      
+      try {
+        const validationResult = await validateTaskPlacement(
+          taskData.title,
+          taskData.description,
+          taskData.parent_task_id,
+          taskData.depends_on_tasks,
+          'admin', // Created by admin
+          'admin_token' // Admin context
+        );
+        
+        const suggestionMessage = formatSuggestionsForAgent(
+          validationResult,
+          taskData.parent_task_id,
+          taskData.depends_on_tasks
+        );
+        
+        // Check for denial
+        if (validationResult.status === 'denied' && !ALLOW_RAG_OVERRIDE) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `❌ Task creation BLOCKED by RAG validation:\n${suggestionMessage}`
+            }],
+            isError: true
+          };
+        }
+        
+        // Process validation results
+        if (validationResult.status !== 'approved') {
+          validationMessage = `\n🧠 RAG Validation (${validationResult.status}):\n${suggestionMessage}\n`;
+          
+          // Apply suggestions automatically
+          const suggestions = validationResult.suggestions;
+          if (suggestions.parent_task !== undefined) {
+            finalParentTaskId = suggestions.parent_task;
+            validationMessage += `✓ Applied suggested parent: ${finalParentTaskId}\n`;
+          }
+          if (suggestions.dependencies) {
+            finalDependsOnTasks = suggestions.dependencies;
+            validationMessage += `✓ Applied suggested dependencies: ${finalDependsOnTasks.join(', ')}\n`;
+          }
+          
+          if (MCP_DEBUG) {
+            console.log(`📝 RAG suggestions automatically applied for task ${taskId}`);
+          }
+        } else {
+          validationMessage = '\n✅ RAG validation approved placement\n';
+        }
+      } catch (error) {
+        console.warn('RAG validation failed:', error);
+        validationMessage = `\n⚠️ RAG validation failed: ${error instanceof Error ? error.message : String(error)}\n`;
+      }
+    }
     
     const transaction = db.transaction(() => {
       // Insert task
