@@ -478,7 +478,7 @@ registerTool(
       case 'multiple':
         return createMultipleTasks(targetAgentId, tasks!, coordination_notes);
       case 'single':
-        return createSingleTask(targetAgentId, {
+        return await createSingleTask(targetAgentId, {
           title: task_title!,
           description: task_description!,
           priority,
