@@ -101,40 +101,8 @@ registerTool(
         };
       }
       
-      // Smart task placement: Suggest parent when trying to create root task with existing roots  
-      if (!actualParentTaskId) {
-        const rootCheck = db.prepare('SELECT task_id, title, status FROM tasks WHERE parent_task IS NULL ORDER BY created_at DESC LIMIT 1').get();
-        
-        if (rootCheck) {
-          const existingPhase = rootCheck as any;
-          
-          // Get smart parent suggestions using RAG if available, otherwise use similarity
-          const suggestions = await getSmartParentSuggestions(db, task_title!, task_description!);
-          
-          let suggestionText = '\n\n💡 **Smart Parent Suggestions:**\n';
-          if (suggestions.length > 0) {
-            suggestions.forEach((suggestion: any, i: number) => {
-              suggestionText += `  ${i + 1}. ${suggestion.task_id}: ${suggestion.title}\n`;
-              suggestionText += `     Status: ${suggestion.status} | Priority: ${suggestion.priority} | ${suggestion.reason}\n`;
-            });
-          } else {
-            suggestionText += `  Consider using parent_task_id="${existingPhase.task_id}" to add to current phase\n`;
-            suggestionText += `  Or complete existing tasks to start a new phase\n`;
-          }
-          
-          suggestionText += '\n🧠 **Use RAG for smarter suggestions:** The system can analyze task content for optimal placement.';
-          
-          return {
-            content: [{
-              type: 'text' as const,
-              text: `📋 **Task Placement Guidance**\n\nRoot task "${existingPhase.title}" (${existingPhase.task_id}) already exists.\n\n` +
-                `Every task except the first must have a parent for better organization.${suggestionText}\n\n` +
-                `Use 'view_tasks' to see all available parent options.`
-            }],
-            isError: false // Changed to false - this is guidance, not an error
-          };
-        }
-      }
+      // Note: The old smart task placement logic has been replaced by RAG validation below
+      // We no longer need to handle root task suggestions here as RAG validation handles it
       
       // Validate dependencies if provided
       for (const depTaskId of depends_on_tasks) {
