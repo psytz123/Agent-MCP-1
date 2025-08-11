@@ -13,7 +13,8 @@
     "start": "node build/examples/server/agentMcpServer.js",
     "server": "tsx src/examples/server/agentMcpServer.ts",
     "test-client": "tsx src/examples/client/streamableHttpWithSseFallbackClient.ts",
-    "clean": "rm -rf build"
+    "clean": "rm -rf build",
+    "test": "npm run -s build && tsx --test tests"
   },
   "keywords": [
     "mcp",

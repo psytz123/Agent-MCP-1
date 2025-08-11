@@ -3,6 +3,8 @@
 
 import { getDbConnection } from '../db/connection.js';
 import { MCP_DEBUG } from '../core/config.js';
+import { globalState } from '../core/globals.js';
+import { generateAgentSessionName } from '../utils/tmux.js';
 
 // Resource interfaces
 export interface AgentResource {
@@ -123,7 +125,8 @@ export async function getAgentResourceContent(agentId: string): Promise<AgentRes
     
     const recentActions = actionsStmt.all(agentId);
     
-    const tmuxSessionName = `${agent.agent_id}-148f`;
+    const adminToken = getAdminToken();
+    const tmuxSessionName = adminToken ? generateAgentSessionName(agent.agent_id, adminToken) : `${agent.agent_id}-0000`;
     
     const agentSummary = {
       "🤖 Agent": `@${agent.agent_id}`,
@@ -178,6 +181,16 @@ function getStatusEmoji(status: string): string {
     case 'failed': return '❌';
     case 'cancelled': return '🚫';
     default: return '❓';
+  }
+}
+
+function getAdminToken(): string | null {
+  if (globalState.adminToken) return globalState.adminToken;
+  try {
+    const row = getDbConnection().prepare("SELECT config_value FROM admin_config WHERE config_key = 'admin_token'").get() as any;
+    return row?.config_value || null;
+  } catch {
+    return null;
   }
 }
 

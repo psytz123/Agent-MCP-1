@@ -7,7 +7,7 @@ import { registerTool } from './registry.js';
 import { getDbConnection } from '../db/connection.js';
 import { getDatabaseStats } from '../db/schema.js';
 import { VERSION, AGENT_COLORS, getProjectDir, MCP_DEBUG } from '../core/config.js';
-import { verifyToken, getAgentId, generateToken as authGenerateToken, registerActiveAgent } from '../core/auth.js';
+import { verifyToken, getAgentId, generateToken as authGenerateToken, registerActiveAgent, unregisterActiveAgent } from '../core/auth.js';
 import { globalState as coreGlobalState } from '../core/globals.js';
 import { 
   isTmuxAvailable, 
@@ -19,7 +19,7 @@ import {
   killTmuxSession,
   sessionExists
 } from '../utils/tmux.js';
-// import { buildAgentPrompt, TemplateType } from '../utils/promptTemplates.js';
+import { buildAgentPrompt, TemplateType } from '../utils/promptTemplates.js';
 import path from 'path';
 import { promises as fs } from 'fs';
 import { exec } from 'child_process';
@@ -41,14 +41,7 @@ export interface Agent {
   terminated_at?: string;
 }
 
-// Global state tracking (similar to Python globals)
-const globalState = {
-  activeAgents: new Map<string, Agent>(),
-  agentWorkingDirs: new Map<string, string>(),
-  agentTmuxSessions: new Map<string, string>(), // agent_id -> tmux_session_name
-  agentColorIndex: 0,
-  serverStartTime: new Date().toISOString()
-};
+// Use shared runtime state from coreGlobalState; do not shadow with a local state
 
 // Helper functions
 function generateAgentToken(): string {
@@ -56,8 +49,8 @@ function generateAgentToken(): string {
 }
 
 function getNextAgentColor(): string {
-  const color = AGENT_COLORS[globalState.agentColorIndex % AGENT_COLORS.length] || 'blue';
-  globalState.agentColorIndex++;
+  const color = AGENT_COLORS[coreGlobalState.agentColorIndex % AGENT_COLORS.length] || 'blue';
+  coreGlobalState.agentColorIndex++;
   return color;
 }
 
@@ -127,16 +120,7 @@ registerTool(
       };
     }
     
-    // Check if agent already exists
-    if (globalState.activeAgents.has(agent_id)) {
-      return {
-        content: [{
-          type: 'text' as const,
-          text: `❌ Agent '${agent_id}' already exists in active memory`
-        }],
-        isError: true
-      };
-    }
+    // Check if agent already exists (handled via database check below)
     
     const db = getDbConnection();
     
@@ -253,9 +237,11 @@ registerTool(
         created_at: createdAt,
         updated_at: createdAt
       };
-      
-      globalState.activeAgents.set(agent_id, agentData);
-      globalState.agentWorkingDirs.set(agent_id, workingDir);
+
+      // Register using token-keyed map for correctness
+      registerActiveAgent(newToken, agentData);
+      // Also keep fast lookup for working dirs by agent_id
+      coreGlobalState.agentWorkingDirs.set(agent_id, workingDir);
       
       // Launch tmux session for the agent
       let launchStatus = '';
@@ -263,116 +249,76 @@ registerTool(
         try {
           // Create sanitized session name
           const tmuxSessionName = generateAgentSessionName(agent_id, admin_token);
-          
-          // Create the tmux session (without immediate command, no environment variables)
-          if (await createTmuxSession(tmuxSessionName, workingDir, undefined, undefined)) {
+
+          // Prepare environment variables for the tmux session
+          const serverPort = process.env.PORT || '3001';
+          const serverUrl = process.env.MCP_SERVER_URL || `http://localhost:${serverPort}`;
+          const envVars: Record<string, string> = {
+            MCP_AGENT_ID: agent_id,
+            MCP_AGENT_TOKEN: newToken,
+            MCP_SERVER_URL: serverUrl,
+            MCP_WORKING_DIR: workingDir,
+          };
+
+          // Create the tmux session (without immediate command, but with env)
+          if (await createTmuxSession(tmuxSessionName, workingDir, undefined, envVars)) {
             // Track the tmux session in globals
-            globalState.agentTmuxSessions.set(agent_id, tmuxSessionName);
-            
+            coreGlobalState.agentTmuxSessions.set(agent_id, tmuxSessionName);
+
             // Initial setup commands for visibility in tmux session
             const welcomeMessage = `echo '=== Agent ${agent_id} initialization starting ==='`;
-            if (await sendCommandToSession(tmuxSessionName, welcomeMessage)) {
-              if (MCP_DEBUG) {
-                console.log(`✅ Sent welcome message to agent '${agent_id}'`);
-              }
-            }
-            
-            // Add setup delay to ensure commands execute properly
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
-            
-            // Verify we're in the correct working directory
-            const verifyCommand = `echo 'Working directory:' && pwd`;
-            await sendCommandToSession(tmuxSessionName, verifyCommand);
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
-            // Get server port for MCP registration
-            const serverPort = process.env.PORT || '3001';
-            const mcpServerUrl = `http://localhost:${serverPort}/mcp`;
-            
-            // Log MCP server info
-            const mcpInfoCommand = `echo 'MCP Server URL: ${mcpServerUrl}'`;
-            await sendCommandToSession(tmuxSessionName, mcpInfoCommand);
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            
-            // Register MCP server connection
+            await sendCommandToSession(tmuxSessionName, welcomeMessage);
+            await new Promise(resolve => setTimeout(resolve, 750));
+
+            // Verify working directory
+            await sendCommandToSession(tmuxSessionName, `echo 'Working directory:' && pwd`);
+            await new Promise(resolve => setTimeout(resolve, 750));
+
+            // Register MCP server connection (transport kept as configured externally)
+            const mcpServerUrl = `${serverUrl}/mcp`;
+            await sendCommandToSession(tmuxSessionName, `echo 'MCP Server URL: ${mcpServerUrl}'`);
+            await new Promise(resolve => setTimeout(resolve, 750));
+
             const mcpAddCommand = `claude mcp add -t sse AgentMCP-Node ${mcpServerUrl}`;
-            if (MCP_DEBUG) {
-              console.log(`Registering MCP server for agent '${agent_id}': ${mcpAddCommand}`);
-            }
-            
             if (!await sendCommandToSession(tmuxSessionName, mcpAddCommand)) {
-              console.error(`Failed to register MCP server for agent '${agent_id}'`);
               launchStatus = `❌ Failed to register MCP server for agent '${agent_id}'.`;
             } else {
-              // Add delay to ensure MCP registration completes
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              
-              // Verify MCP registration
-              const verifyMcpCommand = 'claude mcp list';
-              if (MCP_DEBUG) {
-                console.log(`Verifying MCP registration for agent '${agent_id}'`);
-              }
-              await sendCommandToSession(tmuxSessionName, verifyMcpCommand);
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              
+              await new Promise(resolve => setTimeout(resolve, 750));
+              await sendCommandToSession(tmuxSessionName, 'claude mcp list');
+              await new Promise(resolve => setTimeout(resolve, 750));
+
               // Start Claude
-              const startClaudeMessage = "echo '--- Starting Claude with MCP ---'";
-              await sendCommandToSession(tmuxSessionName, startClaudeMessage);
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              
-              const claudeCommand = 'claude --dangerously-skip-permissions';
-              if (MCP_DEBUG) {
-                console.log(`Starting Claude for agent '${agent_id}': ${claudeCommand}`);
-              }
-              
-              if (!await sendCommandToSession(tmuxSessionName, claudeCommand)) {
-                console.error(`Failed to start Claude for agent '${agent_id}'`);
+              await sendCommandToSession(tmuxSessionName, "echo '--- Starting Claude with MCP ---'");
+              await new Promise(resolve => setTimeout(resolve, 750));
+              if (!await sendCommandToSession(tmuxSessionName, 'claude --dangerously-skip-permissions')) {
                 launchStatus = `❌ Failed to start Claude for agent '${agent_id}' after MCP registration.`;
               } else {
                 launchStatus = `✅ tmux session '${tmuxSessionName}' created for agent '${agent_id}' with MCP registration and Claude.`;
-                
-                // Log completion message to tmux session
-                const completionMessage = `echo '=== Agent ${agent_id} setup complete - Claude starting ==='`;
-                await sendCommandToSession(tmuxSessionName, completionMessage);
-                
-                // Send the exact prompt from Python Agent-MCP (worker_with_rag template)
-                console.log(`🔥 SCHEDULING TIMEOUT for agent '${agent_id}' with session '${tmuxSessionName}'`);
-                const timeoutId = setTimeout(async () => {
-                  console.log(`🎯 TIMEOUT CALLBACK EXECUTING for agent '${agent_id}'`);
-                  const prompt = `You are ${agent_id} - Agent Token: ${newToken}. Start working on your assigned tasks.`;
 
-                  try {
-                    console.log(`🔧 About to send keys to session: ${tmuxSessionName}`);
-                    // Step 1: Type the message
-                    await execAsync(`tmux send-keys -t "${tmuxSessionName}" "${prompt}"`);
-                    console.log(`📝 Typed prompt to agent '${agent_id}'`);
-                    
-                    // Step 2: Wait 0.5 seconds
-                    await new Promise(resolve => setTimeout(resolve, 500));
-                    
-                    // Step 3: Hit Enter
-                    await execAsync(`tmux send-keys -t "${tmuxSessionName}" Enter`);
-                    console.log(`✅ Sent prompt to agent '${agent_id}' with token: ${newToken}`);
-                  } catch (error) {
-                    console.error(`❌ Failed to send prompt to agent '${agent_id}':`, error);
-                  }
-                  console.log(`🏁 TIMEOUT CALLBACK COMPLETED for agent '${agent_id}'`);
-                }, 4000); // Wait 4 seconds for Claude to fully start
-                console.log(`⏰ Timeout scheduled with ID: ${timeoutId} for agent '${agent_id}'`);
+                // Build and send high-quality system prompt (worker_with_rag)
+                const prompt = buildAgentPrompt(
+                  agent_id,
+                  newToken,
+                  admin_token,
+                  'worker_with_rag'
+                );
+
+                if (prompt) {
+                  setTimeout(async () => {
+                    await sendPromptToSession(tmuxSessionName, prompt, 3);
+                  }, 3000);
+                }
               }
             }
-            
+
             if (MCP_DEBUG) {
               console.log(`tmux session '${tmuxSessionName}' launched for agent '${agent_id}'`);
             }
           } else {
             launchStatus = `❌ Failed to create tmux session for agent '${agent_id}'.`;
-            console.error(launchStatus);
           }
         } catch (error) {
           launchStatus = `❌ Failed to launch tmux session: ${error instanceof Error ? error.message : String(error)}`;
-          console.error(launchStatus);
         }
       } else {
         console.warn('tmux is not available - agent session cannot be launched automatically');
@@ -411,7 +357,7 @@ registerTool(
       }
       
       // Add tmux session info if available
-      const sessionName = globalState.agentTmuxSessions.get(agent_id);
+      const sessionName = coreGlobalState.agentTmuxSessions.get(agent_id);
       if (sessionName) {
         response.push(`**Tmux Session:** ${sessionName}`);
         response.push(`**Connect Command:** \`tmux attach-session -t ${sessionName}\``);
@@ -459,7 +405,7 @@ registerTool(
       const agents = db.prepare('SELECT * FROM agents ORDER BY created_at DESC').all();
       
       // Calculate uptime
-      const startTime = new Date(globalState.serverStartTime);
+      const startTime = new Date(coreGlobalState.serverStartTime);
       const uptime = Math.floor((Date.now() - startTime.getTime()) / 1000);
       const uptimeHours = Math.floor(uptime / 3600);
       const uptimeMinutes = Math.floor((uptime % 3600) / 60);
@@ -469,7 +415,7 @@ registerTool(
         server: {
           version: VERSION,
           uptime: `${uptimeHours}h ${uptimeMinutes}m ${uptimeSeconds}s`,
-          startTime: globalState.serverStartTime
+          startTime: coreGlobalState.serverStartTime
         },
         agents: {
           total: agents.length,
@@ -479,8 +425,8 @@ registerTool(
         },
         database: stats,
         memory: {
-          activeAgents: globalState.activeAgents.size,
-          workingDirs: globalState.agentWorkingDirs.size
+          activeAgents: coreGlobalState.activeAgents.size,
+          workingDirs: coreGlobalState.agentWorkingDirs.size
         }
       };
       
@@ -622,7 +568,7 @@ registerTool(
       const tasksUnassigned = transaction();
       
       // Kill tmux session if it exists
-      const tmuxSessionName = globalState.agentTmuxSessions.get(agent_id);
+      const tmuxSessionName = coreGlobalState.agentTmuxSessions.get(agent_id);
       let tmuxStatus = '';
       
       if (tmuxSessionName) {
@@ -647,14 +593,19 @@ registerTool(
         }
         
         // Remove from session tracking
-        globalState.agentTmuxSessions.delete(agent_id);
+        coreGlobalState.agentTmuxSessions.delete(agent_id);
       } else {
         tmuxStatus = '- No tmux session found';
       }
       
-      // Update global state
-      globalState.activeAgents.delete(agent_id);
-      globalState.agentWorkingDirs.delete(agent_id);
+      // Update global state will be handled by unregisterActiveAgent using token below
+      coreGlobalState.agentWorkingDirs.delete(agent_id);
+      try {
+        const agentRow = db.prepare('SELECT token FROM agents WHERE agent_id = ?').get(agent_id) as any;
+        if (agentRow?.token) {
+          unregisterActiveAgent(agentRow.token);
+        }
+      } catch {}
       
       const response = [
         `✅ **Agent '${agent_id}' Terminated Successfully**`,
@@ -833,7 +784,7 @@ registerTool(
       }
 
       // Check if tmux session still exists
-      const sessionName = globalState.agentTmuxSessions.get(agent_id);
+      const sessionName = coreGlobalState.agentTmuxSessions.get(agent_id);
       if (!sessionName) {
         return {
           content: [{ 
@@ -846,7 +797,7 @@ registerTool(
 
       if (!(await sessionExists(sessionName))) {
         // Clean up the dead session reference
-        globalState.agentTmuxSessions.delete(agent_id);
+        coreGlobalState.agentTmuxSessions.delete(agent_id);
         return {
           content: [{ 
             type: 'text' as const, 
@@ -880,14 +831,23 @@ registerTool(
       db.prepare('UPDATE agents SET status = ?, updated_at = ? WHERE agent_id = ?')
         .run('active', updatedAt, agent_id);
 
-      // Build and send new prompt
+      // Build and send new prompt using the template system
       let promptToSend: string;
-      
       if (custom_prompt) {
-        promptToSend = custom_prompt;
+        promptToSend = buildAgentPrompt(
+          agent_id,
+          agentToken,
+          admin_token,
+          'custom',
+          custom_prompt
+        ) || `You are ${agent_id}.`;
       } else {
-        // Build agent prompt using template system
-        promptToSend = `You are ${agent_id} - Agent Token: ${agentToken}. Start working on your assigned tasks.`;
+        promptToSend = buildAgentPrompt(
+          agent_id,
+          agentToken,
+          admin_token,
+          (prompt_template as TemplateType) || 'worker_with_rag'
+        ) || `You are ${agent_id}.`;
       }
 
       // Send the new prompt to restart the agent with a delay
@@ -899,8 +859,8 @@ registerTool(
         }
       }, 2000);
 
-      // Update in-memory state
-      globalState.activeAgents.set(agentToken, {
+      // Update in-memory state, keyed by token
+      registerActiveAgent(agentToken, {
         token: agentToken,
         agent_id,
         status: 'active',
@@ -1001,8 +961,8 @@ registerTool(
       for (const agent of agents) {
         const expectedSessionName = `${agent.agent_id}-${adminTokenSuffix}`;
         const hasActiveTmuxSession = agentSessions.includes(expectedSessionName);
-        const isInMemory = globalState.agentTmuxSessions.has(agent.agent_id);
-        const memorySessionName = globalState.agentTmuxSessions.get(agent.agent_id);
+        const isInMemory = coreGlobalState.agentTmuxSessions.has(agent.agent_id);
+        const memorySessionName = coreGlobalState.agentTmuxSessions.get(agent.agent_id);
 
         const result = {
           agent_id: agent.agent_id,
@@ -1027,19 +987,19 @@ registerTool(
           result.consistency = 'INCONSISTENT: Terminated agent with live tmux session';
           if (auto_cleanup_dead) {
             // Add to memory so it can be relaunched
-            globalState.agentTmuxSessions.set(agent.agent_id, expectedSessionName);
+            coreGlobalState.agentTmuxSessions.set(agent.agent_id, expectedSessionName);
             cleanupActions.push(`Added ${agent.agent_id} to memory (found live tmux session)`);
           }
         } else if (isInMemory && !hasActiveTmuxSession) {
           result.consistency = 'INCONSISTENT: In memory but no tmux session';
           if (auto_cleanup_dead) {
-            globalState.agentTmuxSessions.delete(agent.agent_id);
+            coreGlobalState.agentTmuxSessions.delete(agent.agent_id);
             cleanupActions.push(`Removed ${agent.agent_id} from memory (no tmux session)`);
           }
         } else if (!isInMemory && hasActiveTmuxSession && agent.status !== 'terminated') {
           result.consistency = 'INCONSISTENT: Has tmux session but not in memory';
           if (auto_cleanup_dead) {
-            globalState.agentTmuxSessions.set(agent.agent_id, expectedSessionName);
+            coreGlobalState.agentTmuxSessions.set(agent.agent_id, expectedSessionName);
             cleanupActions.push(`Added ${agent.agent_id} to memory (found tmux session)`);
           }
         }
@@ -1182,7 +1142,7 @@ registerTool(
       for (const agent of agents) {
         const expectedSessionName = `${agent.agent_id}-${adminTokenSuffix}`;
         const hasActiveTmuxSession = agentSessions.includes(expectedSessionName);
-        const isInMemory = globalState.agentTmuxSessions.has(agent.agent_id);
+        const isInMemory = coreGlobalState.agentTmuxSessions.has(agent.agent_id);
         
         // Get last activity for this agent
         const agentActivity = recentActivity.filter(a => a.agent_id === agent.agent_id);
@@ -1214,7 +1174,7 @@ registerTool(
             if (auto_kill_stale) {
               try {
                 await killTmuxSession(expectedSessionName);
-                globalState.agentTmuxSessions.delete(agent.agent_id);
+                coreGlobalState.agentTmuxSessions.delete(agent.agent_id);
                 autoActions.push(`Killed stale session: ${expectedSessionName}`);
               } catch (error) {
                 autoActions.push(`Failed to kill session ${expectedSessionName}: ${error}`);
@@ -1249,7 +1209,7 @@ registerTool(
 
         // Auto-add to memory if session exists but not tracked
         if (hasActiveTmuxSession && !isInMemory && agent.status !== 'terminated') {
-          globalState.agentTmuxSessions.set(agent.agent_id, expectedSessionName);
+          coreGlobalState.agentTmuxSessions.set(agent.agent_id, expectedSessionName);
           autoActions.push(`Added ${agent.agent_id} to memory tracking`);
         }
 

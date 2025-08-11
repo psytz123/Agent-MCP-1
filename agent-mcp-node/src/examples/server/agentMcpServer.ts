@@ -30,6 +30,13 @@ import "../../tools/file_management.js"; // Register file management tools
 import "../../tools/project_context.js"; // Register project context tools
 // Resources will be handled directly in server setup
 import { MCP_DEBUG, VERSION } from "../../core/config.js";
+import { startPeriodicIndexing, stopPeriodicIndexing } from "../../features/rag/indexing.js";
+import { startClaudeSessionMonitor, stopClaudeSessionMonitor } from "../../features/claude/sessionMonitor.js";
+import { discoverActiveAgentsFromTmux } from "../../utils/tmux.js";
+import { globalState } from "../../core/globals.js";
+
+// Background interval handles
+let agentDiscoveryInterval: NodeJS.Timeout | null = null;
 
 // Parse command line arguments
 const program = new Command();
@@ -102,6 +109,39 @@ try {
 } catch (error) {
   console.error("❌ OpenAI service initialization failed:", error);
   console.log("⚠️  Continuing without OpenAI (RAG functionality will be limited)");
+}
+
+// Start background services (RAG indexing and session monitor) and discover existing sessions
+try {
+  // Discover any existing agent tmux sessions and register in memory
+  const discovered = await discoverActiveAgentsFromTmux(SERVER_ADMIN_TOKEN);
+  if (discovered?.length) {
+    console.log(`🔎 Discovered ${discovered.length} agent tmux sessions at startup`);
+    for (const d of discovered) {
+      globalState.agentTmuxSessions.set(d.agentId, d.sessionName);
+    }
+  }
+
+  // Start periodic RAG indexing (default 300s)
+  startPeriodicIndexing(parseInt(process.env.MCP_RAG_INDEX_INTERVAL_SECONDS || '300'));
+
+  // Start Claude Code session monitor (default 5s)
+  startClaudeSessionMonitor(SERVER_ADMIN_TOKEN, parseInt(process.env.MCP_CLAUDE_SESSION_MONITOR_INTERVAL || '5'));
+
+  // Start periodic agent discovery refresh (default 15s)
+  const discoveryIntervalSec = parseInt(process.env.MCP_AGENT_DISCOVERY_INTERVAL || '15');
+  agentDiscoveryInterval = setInterval(async () => {
+    try {
+      const found = await discoverActiveAgentsFromTmux(SERVER_ADMIN_TOKEN);
+      for (const d of found) {
+        globalState.agentTmuxSessions.set(d.agentId, d.sessionName);
+      }
+    } catch (e) {
+      if (MCP_DEBUG) console.warn('Agent discovery refresh failed:', e);
+    }
+  }, discoveryIntervalSec * 1000);
+} catch (error) {
+  console.error('⚠️ Failed to start background services:', error);
 }
 
 // Create server factory function
@@ -419,6 +459,13 @@ const httpServer = app.listen(PORT, () => {
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.log('\n🛑 Shutting down Agent-MCP Node.js server...');
+  // Stop background services
+  stopPeriodicIndexing();
+  stopClaudeSessionMonitor();
+  if (agentDiscoveryInterval) {
+    clearInterval(agentDiscoveryInterval);
+    agentDiscoveryInterval = null;
+  }
   
   // Close all active transports
   const sessionIds = Object.keys(transports);

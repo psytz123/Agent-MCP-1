@@ -15,6 +15,7 @@ import {
   validateTaskStatus 
 } from './core.js';
 import { autoLaunchTestingAgents } from '../../utils/testingAgent.js';
+import { indexTaskData } from '../../features/rag/indexing.js';
 
 // Helper function to get agent ID from token
 function getAgentIdFromToken(token: string): string | null {
@@ -471,6 +472,28 @@ registerTool(
               notes: notes || completion_notes,
               estimated_hours
             });
+            
+            // Re-index task for RAG when core fields change
+            try {
+              const updatedTaskRow = db.prepare('SELECT * FROM tasks WHERE task_id = ?').get(taskId) as any;
+              if (updatedTaskRow) {
+                const taskForIndexing = {
+                  task_id: updatedTaskRow.task_id,
+                  title: updatedTaskRow.title,
+                  description: updatedTaskRow.description,
+                  assigned_to: updatedTaskRow.assigned_to,
+                  created_by: updatedTaskRow.created_by,
+                  status: updatedTaskRow.status,
+                  priority: updatedTaskRow.priority,
+                  created_at: updatedTaskRow.created_at,
+                  updated_at: updatedTaskRow.updated_at,
+                  parent_task: updatedTaskRow.parent_task,
+                  depends_on_tasks: (() => { try { return JSON.parse(updatedTaskRow.depends_on_tasks || '[]'); } catch { return []; } })(),
+                  notes: (() => { try { return JSON.parse(updatedTaskRow.notes || '[]'); } catch { return []; } })()
+                };
+                indexTaskData(taskId, taskForIndexing).catch(() => {});
+              }
+            } catch {}
             
             // Special handling for completion
             if (new_status === 'completed') {

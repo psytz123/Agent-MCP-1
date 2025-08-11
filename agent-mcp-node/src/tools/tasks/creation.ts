@@ -27,10 +27,12 @@ registerTool(
     task_description: z.string().describe('Detailed description of the task'),
     priority: z.enum(['low', 'medium', 'high']).default('medium').describe('Task priority'),
     depends_on_tasks: z.array(z.string()).optional().describe('List of task IDs this task depends on'),
-    parent_task_id: z.string().optional().describe('ID of the parent task (if not provided, uses current task)')
+    parent_task_id: z.string().optional().describe('ID of the parent task (if not provided, uses current task)'),
+    override_rag: z.boolean().default(false).describe('Override RAG validation suggestions (defaults to false - accepts suggestions)'),
+    override_reason: z.string().optional().describe('Reason for overriding RAG validation (required if override_rag is true)')
   }),
   async (args, context) => {
-    const { token, task_title, task_description, priority, depends_on_tasks = [], parent_task_id } = args;
+    const { token, task_title, task_description, priority, depends_on_tasks = [], parent_task_id, override_rag = false, override_reason } = args;
     
     // Get requesting agent ID from token or context
     let requestingAgentId: string | null = null;
@@ -59,6 +61,17 @@ registerTool(
         content: [{
           type: 'text' as const,
           text: '❌ Error: task_title and task_description are required'
+        }],
+        isError: true
+      };
+    }
+
+    // Validate override parameters
+    if (override_rag && !override_reason) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: '❌ Error: override_reason is required when override_rag is true'
         }],
         isError: true
       };
@@ -150,7 +163,7 @@ registerTool(
           );
           
           // Check for denial
-          if (validationResult.status === 'denied' && !ALLOW_RAG_OVERRIDE) {
+          if (validationResult.status === 'denied' && !ALLOW_RAG_OVERRIDE && !override_rag) {
             return {
               content: [{
                 type: 'text' as const,
@@ -164,19 +177,42 @@ registerTool(
           if (validationResult.status !== 'approved') {
             validationMessage = `\n🧠 RAG Validation (${validationResult.status}):\n${suggestionMessage}\n`;
             
-            // For agents, automatically accept suggestions
-            const suggestions = validationResult.suggestions;
-            if (suggestions.parent_task !== undefined) {
-              finalParentTaskId = suggestions.parent_task || undefined;
-              validationMessage += `✓ Applied suggested parent: ${finalParentTaskId}\n`;
-            }
-            if (suggestions.dependencies) {
-              finalDependsOnTasks = suggestions.dependencies;
-              validationMessage += `✓ Applied suggested dependencies: ${finalDependsOnTasks.join(', ')}\n`;
-            }
-            
-            if (MCP_DEBUG) {
-              console.log(`📝 Agent ${requestingAgentId} automatically accepted RAG suggestions`);
+            // Check if user wants to override suggestions
+            if (override_rag) {
+              validationMessage += `\n🔓 RAG Override Applied: ${override_reason}\n`;
+              if (MCP_DEBUG) {
+                console.log(`📝 Agent ${requestingAgentId} overrode RAG suggestions: ${override_reason}`);
+              }
+            } else {
+              // For agents, automatically accept suggestions but show what changed
+              const suggestions = validationResult.suggestions;
+              let changesApplied = [];
+              
+              if (suggestions.parent_task !== undefined && suggestions.parent_task !== actualParentTaskId) {
+                finalParentTaskId = suggestions.parent_task || undefined;
+                if (finalParentTaskId === null || finalParentTaskId === undefined) {
+                  changesApplied.push(`Parent task: Changed to ROOT TASK (was: ${actualParentTaskId || 'none'})`);
+                } else {
+                  changesApplied.push(`Parent task: Changed to "${finalParentTaskId}" (was: ${actualParentTaskId || 'none'})`);
+                }
+              }
+              
+              if (suggestions.dependencies && JSON.stringify(suggestions.dependencies) !== JSON.stringify(depends_on_tasks)) {
+                finalDependsOnTasks = suggestions.dependencies;
+                changesApplied.push(`Dependencies: Changed to [${suggestions.dependencies.join(', ')}] (was: [${depends_on_tasks.join(', ')}])`);
+              }
+              
+              if (changesApplied.length > 0) {
+                validationMessage += `\n✅ **AUTO-APPLIED RAG CORRECTIONS**:\n`;
+                changesApplied.forEach(change => {
+                  validationMessage += `   • ${change}\n`;
+                });
+                validationMessage += `\n💡 These changes improve task organization and workflow.`;
+              }
+              
+              if (MCP_DEBUG) {
+                console.log(`📝 Agent ${requestingAgentId} automatically accepted RAG suggestions: ${changesApplied.length} changes`);
+              }
             }
             
             // Check if escalation is needed
@@ -350,7 +386,11 @@ registerTool(
     // Options
     validate_agent_workload: z.boolean().default(true).describe('Check agent capacity before assignment'),
     coordination_notes: z.string().optional().describe('Optional coordination context'),
-    estimated_hours: z.number().optional().describe('Estimated hours for workload calculation')
+    estimated_hours: z.number().optional().describe('Estimated hours for workload calculation'),
+    
+    // RAG validation options
+    override_rag: z.boolean().default(false).describe('Override RAG validation suggestions (defaults to false - accepts suggestions)'),
+    override_reason: z.string().optional().describe('Reason for overriding RAG validation (required if override_rag is true)')
   }),
   async (args, context) => {
     const { 
@@ -365,7 +405,9 @@ registerTool(
       task_ids,
       validate_agent_workload = true,
       coordination_notes,
-      estimated_hours
+      estimated_hours,
+      override_rag = false,
+      override_reason
     } = args;
     
     // Verify admin authentication
@@ -374,6 +416,17 @@ registerTool(
         content: [{
           type: 'text' as const,
           text: '❌ Unauthorized: Admin token required'
+        }],
+        isError: true
+      };
+    }
+
+    // Validate override parameters
+    if (override_rag && !override_reason) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: '❌ Error: override_reason is required when override_rag is true'
         }],
         isError: true
       };
@@ -451,7 +504,9 @@ registerTool(
           description: task_description!,
           priority,
           depends_on_tasks,
-          parent_task_id
+          parent_task_id,
+          override_rag,
+          override_reason
         }, coordination_notes);
     }
   }
@@ -793,7 +848,7 @@ async function createSingleTask(agentId: string, taskData: any, notes?: string) 
         );
         
         // Check for denial
-        if (validationResult.status === 'denied' && !ALLOW_RAG_OVERRIDE) {
+        if (validationResult.status === 'denied' && !ALLOW_RAG_OVERRIDE && !taskData.override_rag) {
           return {
             content: [{
               type: 'text' as const,
@@ -807,19 +862,27 @@ async function createSingleTask(agentId: string, taskData: any, notes?: string) 
         if (validationResult.status !== 'approved') {
           validationMessage = `\n🧠 RAG Validation (${validationResult.status}):\n${suggestionMessage}\n`;
           
-          // Apply suggestions automatically
-          const suggestions = validationResult.suggestions;
-          if (suggestions.parent_task !== undefined) {
-            finalParentTaskId = suggestions.parent_task || undefined;
-            validationMessage += `✓ Applied suggested parent: ${finalParentTaskId}\n`;
-          }
-          if (suggestions.dependencies) {
-            finalDependsOnTasks = suggestions.dependencies;
-            validationMessage += `✓ Applied suggested dependencies: ${finalDependsOnTasks.join(', ')}\n`;
-          }
-          
-          if (MCP_DEBUG) {
-            console.log(`📝 RAG suggestions automatically applied for task ${taskId}`);
+          // Check if user wants to override suggestions
+          if (taskData.override_rag) {
+            validationMessage += `\n🔓 RAG Override Applied: ${taskData.override_reason}\n`;
+            if (MCP_DEBUG) {
+              console.log(`📝 Admin overrode RAG suggestions for task ${taskId}: ${taskData.override_reason}`);
+            }
+          } else {
+            // Apply suggestions automatically
+            const suggestions = validationResult.suggestions;
+            if (suggestions.parent_task !== undefined) {
+              finalParentTaskId = suggestions.parent_task || undefined;
+              validationMessage += `✓ Applied suggested parent: ${finalParentTaskId}\n`;
+            }
+            if (suggestions.dependencies) {
+              finalDependsOnTasks = suggestions.dependencies;
+              validationMessage += `✓ Applied suggested dependencies: ${finalDependsOnTasks.join(', ')}\n`;
+            }
+            
+            if (MCP_DEBUG) {
+              console.log(`📝 RAG suggestions automatically applied for task ${taskId}`);
+            }
           }
         } else {
           validationMessage = '\n✅ RAG validation approved placement\n';

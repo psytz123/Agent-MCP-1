@@ -325,7 +325,12 @@ export async function sendPromptToSession(
     if (MCP_DEBUG) {
       console.log(`Typing prompt to session '${cleanSessionName}'`);
     }
-    await execAsync(`tmux send-keys -t "${cleanSessionName}" "${prompt}"`);
+    const escapedPrompt = prompt
+      .replace(/\\/g, "\\\\")
+      .replace(/"/g, '\\"')
+      .replace(/`/g, '\\`')
+      .replace(/\$/g, '\\\$');
+    await execAsync(`tmux send-keys -t "${cleanSessionName}" "${escapedPrompt}"`);
 
     // Small delay between typing and pressing Enter
     await new Promise(resolve => setTimeout(resolve, 500));

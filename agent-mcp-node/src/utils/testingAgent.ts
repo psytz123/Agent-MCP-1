@@ -73,7 +73,32 @@ function generateTestingAgentToken(): string {
 }
 
 /**
- * Launch testing agent for a completed task
+ * Generate testing agent - wrapper function for compatibility with test scripts
+ */
+export async function generateTestingAgent(
+  completedByAgent: string,
+  completedTaskId: string
+): Promise<TestingAgentLaunchResult> {
+  return launchTestingAgentForCompletedTask(completedTaskId, completedByAgent);
+}
+
+function getAdminTokenFromDb(): string | null {
+  try {
+    const db = getDbConnection();
+    const row = db.prepare("SELECT config_value FROM admin_config WHERE config_key = 'admin_token'").get() as any;
+    return row?.config_value || null;
+  } catch {
+    return null;
+  }
+}
+
+function makeTestingAgentId(completedTaskId: string): string {
+  const suffix = completedTaskId.slice(-6) || crypto.randomUUID().slice(0, 6);
+  return `test-${suffix}`;
+}
+
+/**
+ * Launch testing agent for a completed task - matches Python implementation exactly
  */
 export async function launchTestingAgentForCompletedTask(
   completedTaskId: string,
@@ -83,53 +108,34 @@ export async function launchTestingAgentForCompletedTask(
   const db = getDbConnection();
   
   try {
-    console.log(`🧪 Launching testing agent for completed task: ${completedTaskId}`);
+    console.log(`🧪 _launch_testing_agent_for_completed_task: ${completedTaskId} by ${completedByAgent}`);
     
-    // 1. Send Escape sequences to pause completing agent
-    await sendEscapeToAgent(completedByAgent);
+    // Deterministic testing agent ID to match Python
+    const testingAgentId = makeTestingAgentId(completedTaskId);
     
-    // 2. Get task details for context
-    const task = db.prepare('SELECT * FROM tasks WHERE task_id = ?').get(completedTaskId) as any;
-    if (!task) {
-      console.error(`❌ Cannot find completed task ${completedTaskId} for testing`);
-      return { success: false, testing_agent_id: '', error: 'Task not found' };
-    }
-    
-    // 3. Generate testing agent ID
-    const testingAgentId = `test-${completedTaskId.slice(-6)}`;
-    
-    // 4. Clean up existing testing agent if it exists (task re-completed after fixes)
+    // Clean up existing testing agent if present
     const existingAgent = db.prepare('SELECT agent_id FROM agents WHERE agent_id = ?').get(testingAgentId);
-    
     if (existingAgent) {
-      console.log(`🧹 Task ${completedTaskId} re-completed - cleaning up existing testing agent ${testingAgentId}`);
-      
-      // Remove from database
+      console.log(`🧹 Cleaning up existing testing agent ${testingAgentId}`);
       db.prepare('DELETE FROM agents WHERE agent_id = ?').run(testingAgentId);
-      
-      // Kill tmux session if it exists
       try {
-        const adminConfig = db.prepare('SELECT config_value FROM admin_config WHERE config_key = ?').get('admin_token') as any;
-        const adminToken = adminConfig?.config_value;
-        const suffix = adminToken?.slice(-4).toLowerCase() || '0000';
-        const sessionName = `${testingAgentId.replace(/[^a-zA-Z0-9_-]/g, '_')}-${suffix}`;
-        
-        execSync(`tmux kill-session -t "${sessionName}"`, { timeout: 5000 });
-        console.log(`🧹 Killed existing tmux session for testing agent ${testingAgentId}`);
+        const adminToken = getAdminTokenFromDb();
+        if (adminToken) {
+          const suffix = adminToken.slice(-4).toLowerCase();
+          const sessionName = `${testingAgentId}-${suffix}`;
+          execSync(`tmux kill-session -t "${sessionName}"`, { timeout: 5000 });
+          console.log(`🧹 Killed existing tmux session: ${sessionName}`);
+        }
       } catch (error) {
-        // Session might not exist, continue
         console.log(`ℹ️ No existing tmux session to kill for ${testingAgentId}`);
       }
     }
     
-    // 5. Create testing agent token and database entry
-    const testingToken = generateTestingAgentToken();
+    // Create testing agent token and database entry
+    const testingToken = crypto.randomBytes(16).toString('hex');
     const createdAt = new Date().toISOString();
-    
-    // Get project directory
     const projectDir = getProjectDir();
     
-    // Insert testing agent into database
     const insertResult = db.prepare(`
       INSERT INTO agents (token, agent_id, capabilities, created_at, status, 
                         current_task, working_directory, color)
@@ -140,146 +146,131 @@ export async function launchTestingAgentForCompletedTask(
       JSON.stringify(['testing', 'validation', 'criticism']),
       createdAt,
       'created',
-      completedTaskId, // Set the completed task as current task
+      completedTaskId,
       projectDir,
-      '#FF0000' // Red color for testing agents
+      '#FF0000'
     );
     
     if (insertResult.changes === 0) {
-      console.error(`❌ Failed to create testing agent ${testingAgentId} in database`);
       return { success: false, testing_agent_id: testingAgentId, error: 'Failed to create agent in database' };
     }
     
-    // 6. Build enriched prompt for testing agent
-    const adminConfig = db.prepare('SELECT config_value FROM admin_config WHERE config_key = ?').get('admin_token') as any;
-    const adminToken = adminConfig?.config_value || '';
+    console.log(`✅ Testing agent ${testingAgentId} registered in database`);
     
-    const prompt = buildAgentPrompt(
-      testingAgentId,
-      testingToken,
-      adminToken,
-      'testing_agent',
-      undefined,
-      {
-        completed_by_agent: completedByAgent,
-        completed_task_id: completedTaskId,
-        completed_task_title: task.title || 'Unknown',
-        completed_task_description: task.description || 'No description'
-      }
-    );
-    
-    if (!prompt) {
-      console.error(`❌ Failed to build prompt for testing agent ${testingAgentId}`);
-      return { success: false, testing_agent_id: testingAgentId, error: 'Failed to build prompt' };
+    // Admin token and session naming
+    const adminToken = getAdminTokenFromDb();
+    if (!adminToken) {
+      db.prepare('DELETE FROM agents WHERE agent_id = ?').run(testingAgentId);
+      return { success: false, testing_agent_id: testingAgentId, error: 'Admin token not found' };
     }
-    
-    // 7. Create tmux session for testing agent
     const suffix = adminToken.slice(-4).toLowerCase();
-    const sessionName = `${testingAgentId.replace(/[^a-zA-Z0-9_-]/g, '_')}-${suffix}`;
+    const sessionName = `${testingAgentId}-${suffix}`;
     
     try {
-      // Create tmux session
-      execSync(`tmux new-session -d -s "${sessionName}" -c "${projectDir}"`, { timeout: 10000 });
-      console.log(`✅ Created tmux session for testing agent: ${sessionName}`);
+      // Create tmux session with environment variables
+      const serverPort = process.env.PORT || '3001';
+      const serverUrl = process.env.MCP_SERVER_URL || `http://localhost:${serverPort}`;
+      const envString = [
+        `MCP_AGENT_ID="${testingAgentId}"`,
+        `MCP_AGENT_TOKEN="${testingToken}"`,
+        `MCP_SERVER_URL="${serverUrl}"`,
+        `MCP_WORKING_DIR="${projectDir}"`
+      ].join(' ');
       
-      // Set up environment variables
-      const envCommands = [
-        `export MCP_AGENT_ID="${testingAgentId}"`,
-        `export MCP_AGENT_TOKEN="${testingToken}"`,
-        `export MCP_SERVER_URL="http://localhost:3001"`,
-        `export MCP_WORKING_DIR="${projectDir}"`
-      ];
+      execSync(`cd "${projectDir}" && ${envString} tmux new-session -d -s "${sessionName}"`, { timeout: 10000 });
+      console.log(`✅ Created tmux session: ${sessionName}`);
       
-      for (const envCmd of envCommands) {
-        execSync(`tmux send-keys -t "${sessionName}" "${envCmd}" Enter`, { timeout: 5000 });
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-      
-      // Welcome message
-      const welcomeMsg = `echo '=== Testing Agent ${testingAgentId} initialization starting ==='`;
-      execSync(`tmux send-keys -t "${sessionName}" "${welcomeMsg}" Enter`, { timeout: 5000 });
+      // Register MCP server (leave transport string as-is per environment)
+      execSync(`tmux send-keys -t "${sessionName}" "claude mcp add -t sse AgentMCP ${serverUrl}/mcp" Enter`, { timeout: 5000 });
       await new Promise(resolve => setTimeout(resolve, 1000));
       
-      // Register MCP server connection
-      const mcpAddCommand = `claude mcp add -t sse AgentMCP http://localhost:3001/sse`;
-      execSync(`tmux send-keys -t "${sessionName}" "${mcpAddCommand}" Enter`, { timeout: 5000 });
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
       // Start Claude
-      const claudeCommand = `claude --dangerously-skip-permissions`;
-      execSync(`tmux send-keys -t "${sessionName}" "${claudeCommand}" Enter`, { timeout: 5000 });
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      execSync(`tmux send-keys -t "${sessionName}" "claude --dangerously-skip-permissions" Enter`, { timeout: 5000 });
+      console.log(`✅ Started Claude in session ${sessionName}`);
       
-      // Send enriched prompt after delay using two separate commands
+      // Build enriched prompt for testing agent
+      const task = db.prepare('SELECT * FROM tasks WHERE task_id = ?').get(completedTaskId) as any;
+      const prompt = buildAgentPrompt(
+        testingAgentId,
+        testingToken,
+        adminToken,
+        'testing_agent',
+        undefined,
+        {
+          completed_by_agent: completedByAgent,
+          completed_task_id: completedTaskId,
+          completed_task_title: task?.title || 'Unknown',
+          completed_task_description: task?.description || 'No description'
+        }
+      );
+      if (!prompt) {
+        db.prepare('DELETE FROM agents WHERE agent_id = ?').run(testingAgentId);
+        return { success: false, testing_agent_id: testingAgentId, error: 'Failed to build prompt' };
+      }
+      
+      // Send prompt after a short delay (escape quotes reliably)
       setTimeout(() => {
         try {
-          // First command: type the prompt (without Enter)
-          execSync(`tmux send-keys -t "${sessionName}" "${prompt.replace(/"/g, '\\"').replace(/\n/g, ' ')}"`, { timeout: 10000 });
-          console.log(`✅ Typed prompt to testing agent ${testingAgentId}`);
-          
-          // Second command: press Enter to send the prompt
+          const escaped = prompt.replace(/"/g, '\\"');
+          execSync(`tmux send-keys -t "${sessionName}" "${escaped}"`, { timeout: 10000 });
           setTimeout(() => {
-            try {
-              execSync(`tmux send-keys -t "${sessionName}" Enter`, { timeout: 5000 });
-              console.log(`✅ Sent Enter to testing agent ${testingAgentId}`);
-            } catch (error) {
-              console.error(`❌ Failed to send Enter to testing agent ${testingAgentId}:`, error);
-            }
-          }, 1000);
+            try { execSync(`tmux send-keys -t "${sessionName}" Enter`, { timeout: 5000 }); } catch {}
+          }, 500);
         } catch (error) {
-          console.error(`❌ Failed to send prompt to testing agent ${testingAgentId}:`, error);
+          console.error(`❌ Failed to send prompt to session '${sessionName}':`, error);
         }
-      }, 5000);
+      }, 3000);
       
-      // Log the testing agent creation
+      // Log action
       db.prepare(`
-        INSERT INTO agent_actions (agent_id, action_type, details, created_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO agent_actions (agent_id, action_type, details, created_at, timestamp)
+        VALUES (?, ?, ?, ?, ?)
       `).run(
         'admin',
         'create_testing_agent',
-        JSON.stringify({
-          testing_agent_id: testingAgentId,
-          completed_task_id: completedTaskId,
-          completed_by_agent: completedByAgent
-        }),
+        JSON.stringify({ testing_agent_id: testingAgentId, completed_task_id: completedTaskId, completed_by_agent: completedByAgent, session_name: sessionName }),
+        createdAt,
         createdAt
       );
       
-      // Schedule enhanced testing validation after a brief delay to allow agent to start
-      setTimeout(async () => {
-        try {
-          const enhancedResult = await runEnhancedTestingValidation(
-            testingAgentId,
-            completedByAgent,
-            completedTaskId,
-            {} // In real implementation, pass actual completed work data
-          );
-          
-          if (MCP_DEBUG) {
-            console.log(`🧪 Enhanced testing result for ${testingAgentId}:`, enhancedResult);
-          }
-        } catch (error) {
-          console.error(`❌ Enhanced testing validation error:`, error);
-        }
-      }, 15000); // 15 second delay
-      
-      console.log(`🧪 Testing agent ${testingAgentId} launched successfully for task ${completedTaskId} with enhanced validation`);
       return { success: true, testing_agent_id: testingAgentId };
       
     } catch (error) {
-      console.error(`❌ Failed to create tmux session for testing agent ${testingAgentId}:`, error);
-      
-      // Clean up database entry if session creation failed
       db.prepare('DELETE FROM agents WHERE agent_id = ?').run(testingAgentId);
-      
       return { success: false, testing_agent_id: testingAgentId, error: `Failed to create tmux session: ${error}` };
     }
     
   } catch (error) {
-    console.error(`❌ Error launching testing agent for task ${completedTaskId}:`, error);
     return { success: false, testing_agent_id: '', error: String(error) };
   }
+}
+
+/**
+ * Send prompt to tmux session asynchronously (matches Python send_prompt_async)
+ */
+function sendPromptAsync(sessionName: string, prompt: string, delaySeconds: number = 3): void {
+  setTimeout(() => {
+    try {
+      console.log(`⏳ Waiting ${delaySeconds} seconds for Claude to start up in session '${sessionName}'`);
+      
+      // Type the prompt text (without Enter) - matches Python tmux_utils.py:329-338  
+      execSync(`tmux send-keys -t "${sessionName}" "${prompt.replace(/"/g, '\\"')}"`, { timeout: 10000 });
+      console.log(`✅ Typed prompt to session '${sessionName}'`);
+      
+      // Small delay then send Enter - matches Python tmux_utils.py:340-355
+      setTimeout(() => {
+        try {
+          execSync(`tmux send-keys -t "${sessionName}" Enter`, { timeout: 5000 });
+          console.log(`✅ Successfully sent prompt to tmux session '${sessionName}'`);
+        } catch (error) {
+          console.error(`❌ Failed to send Enter to session '${sessionName}':`, error);
+        }
+      }, 500);
+      
+    } catch (error) {
+      console.error(`❌ Failed to send prompt to session '${sessionName}':`, error);
+    }
+  }, delaySeconds * 1000);
 }
 
 /**

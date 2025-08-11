@@ -9,7 +9,7 @@ import { getDbConnection, isVssLoadable } from '../../db/connection.js';
 import { generateEmbeddings } from '../../external/openai_service.js';
 import { simpleChunker } from './chunking.js';
 import { insertChunkWithEmbedding, removeChunksBySource } from './vectorSearch.js';
-import { getProjectDir, MCP_DEBUG, DISABLE_AUTO_INDEXING, ADVANCED_EMBEDDINGS } from '../../core/config.js';
+import { getProjectDir, MCP_DEBUG, DISABLE_AUTO_INDEXING, ADVANCED_EMBEDDINGS, EMBEDDING_MODEL, EMBEDDING_DIMENSION } from '../../core/config.js';
 import { globalState } from '../../core/globals.js';
 
 /**
@@ -439,7 +439,7 @@ async function processSources(sources: ContentSource[]): Promise<void> {
 
     // Generate embeddings for all chunks
     const chunkTexts = allChunks.map(item => item.chunk.text);
-    const embeddings = await generateEmbeddings(chunkTexts);
+    const embeddings = await generateEmbeddings(chunkTexts, EMBEDDING_MODEL, EMBEDDING_DIMENSION);
 
     // Insert chunks with embeddings
     let successCount = 0;
@@ -675,7 +675,7 @@ export async function indexTaskData(taskId: string, taskData: any): Promise<void
     }
 
     // Generate embeddings
-    const embeddings = await generateEmbeddings(textChunks);
+    const embeddings = await generateEmbeddings(textChunks, EMBEDDING_MODEL, EMBEDDING_DIMENSION);
     
     if (!embeddings || embeddings.length === 0) {
       console.warn(`No embeddings generated for task ${taskId}`);

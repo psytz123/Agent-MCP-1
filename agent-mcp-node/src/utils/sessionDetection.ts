@@ -5,6 +5,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { getDbConnection } from '../db/connection.js';
 import { MCP_DEBUG } from '../core/config.js';
+import { globalState } from '../core/globals.js';
 
 const execAsync = promisify(exec);
 
@@ -395,13 +396,18 @@ export async function sendMessageToAdminSession(message: string, priority: 'low'
       console.log('📭 No active admin session in database, attempting token-based detection...');
     }
     
-    // Try to get admin token from environment or recent activity
-    const adminToken = process.env.SERVER_ADMIN_TOKEN;
+    // Prefer in-memory admin token, then DB fallback
+    let adminToken: string | null = globalState.adminToken || null;
+    if (!adminToken) {
+      try {
+        const db = getDbConnection();
+        const row = db.prepare("SELECT config_value FROM admin_config WHERE config_key = 'admin_token'").get() as any;
+        adminToken = row?.config_value || null;
+      } catch {}
+    }
     if (adminToken) {
       sessionName = await detectAdminSessionByToken(adminToken);
-      
       if (sessionName) {
-        // Update database with discovered session
         await updateAdminSession(sessionName);
         if (MCP_DEBUG) {
           console.log(`🔍 Detected admin session via token scan: ${sessionName}`);
@@ -434,31 +440,20 @@ ${message}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 `;
     
-    // Use both display-message (for immediate notification) and send-keys (for chat history)
-    
-    // 1. First show an immediate notification that works regardless of tmux mode
+    // Use both display-message and send-keys
     const shortNotification = `${priorityIcon} ASSISTANCE REQUEST from agent - check chat for details`;
     await execAsync(`tmux display-message -t "${sessionName}" "${shortNotification}"`);
-    
-    // 2. Then try to send to chat, handling different tmux modes
     try {
-      // Check if session is in copy mode
       const { stdout: sessionInfo } = await execAsync(`tmux display-message -t "${sessionName}" -p "#{pane_in_mode}"`);
       const inMode = sessionInfo.trim() === '1';
-      
       if (inMode) {
-        // Exit copy mode first
         await execAsync(`tmux send-keys -t "${sessionName}" Escape`);
         await new Promise(resolve => setTimeout(resolve, 100));
       }
-      
-      // Send the full message to chat using two separate commands
       const escapedMessage = formattedMessage.replace(/"/g, '\\"');
       await execAsync(`tmux send-keys -t "${sessionName}" "${escapedMessage}"`);
       await execAsync(`tmux send-keys -t "${sessionName}" Enter`);
-      
-    } catch (error) {
-      // Fallback: just send without mode checking using two separate commands
+    } catch {
       const escapedMessage = formattedMessage.replace(/"/g, '\\"');
       await execAsync(`tmux send-keys -t "${sessionName}" "${escapedMessage}"`);
       await execAsync(`tmux send-keys -t "${sessionName}" Enter`);

@@ -179,17 +179,44 @@ async function updateFileStatus(args: Record<string, any>) {
     const normalizedPath = normalizeFilePath(filepath, agent_id);
     const timestamp = new Date().toISOString();
     
-    // Check if agent exists
-    const agentStmt = db.prepare('SELECT agent_id, status FROM agents WHERE agent_id = ?');
-    const agent = agentStmt.get(agent_id) as any;
+    // Check if agent exists - with retry mechanism for race conditions
+    let agent: any = null;
+    let retryCount = 0;
+    const maxRetries = 3;
+    
+    while (!agent && retryCount < maxRetries) {
+      const agentStmt = db.prepare('SELECT agent_id, status FROM agents WHERE agent_id = ?');
+      agent = agentStmt.get(agent_id) as any;
+      
+      if (!agent) {
+        retryCount++;
+        if (retryCount < maxRetries) {
+          // Wait a bit for agent registration to complete
+          await new Promise(resolve => setTimeout(resolve, 100 * retryCount));
+          if (MCP_DEBUG) {
+            console.log(`⏳ Agent ${agent_id} not found, retry ${retryCount}/${maxRetries}`);
+          }
+        }
+      }
+    }
     
     if (!agent) {
+      // Final attempt: check if agent exists in any form and provide helpful error
+      const allAgents = db.prepare('SELECT agent_id FROM agents ORDER BY created_at DESC LIMIT 10').all();
+      const recentAgents = (allAgents as any[]).map(a => a.agent_id).join(', ');
+      
       return {
         content: [{
           type: 'text' as const,
           text: JSON.stringify({
             success: false,
-            error: `Agent ${agent_id} not found`
+            error: `Agent ${agent_id} not found in database`,
+            debug_info: {
+              searched_agent_id: agent_id,
+              recent_agents: recentAgents,
+              total_agents_in_db: allAgents.length,
+              suggestion: `Agent may not be fully registered yet. Recent agents: ${recentAgents}`
+            }
           }, null, 2)
         }],
         isError: true
