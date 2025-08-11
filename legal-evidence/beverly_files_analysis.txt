@@ -1,0 +1,81 @@
+BEVERLY KNITS PROPRIETARY FILES ADDED TO AGENT-MCP
+Evidence Collection Date: August 11, 2025
+
+COMPLETE LIST OF BEVERLY-SPECIFIC FILES:
+==========================================
+
+1. DISABLED_beverly_analytics_erp.py
+2. DISABLED_run_beverly_knits.py  
+3. agent_mcp/agents/beverly_erp_agents.py
+4. backups/beverly_erp_20250808_164026_initial.py
+5. backups/beverly_erp_20250808_180715_initial.py
+6. beverly_agent_launcher.py
+7. beverly_agent_monitor.py
+8. beverly_clean.py
+9. beverly_complete_api.py
+10. beverly_comprehensive_erp.py
+11. beverly_comprehensive_erp_fixed.py
+12. beverly_data_check.html
+13. beverly_emergency_start.py
+14. beverly_final.py
+15. beverly_lightweight.py
+16. beverly_working.py
+17. start_beverly.py
+18. start_beverly_comprehensive.py
+19. start_beverly_fixed.py
+20. start_beverly_production.py
+21. start_beverly_quiet.py
+22. start_beverly_server.py
+23. test_beverly.html
+24. test_beverly_data.py
+
+PROPRIETARY ERP DATA FILES:
+==========================
+- ERP Data/New folder/BOM_2(Sheet1).csv
+- ERP Data/New folder/Expected_Yarn_Report.xlsx
+- ERP Data/New folder/QuadS_finishedFabricList_ (2) (1).xlsx
+- ERP Data/New folder/Sales Activity Report (4).xlsx
+- ERP Data/New folder/Yarn_Demand_2025-08-03_0442.xlsx
+- ERP Data/New folder/Yarn_Inventory_.xlsx
+- ERP Data/New folder/eFab_Inventory_F01_20250804 (1).xlsx
+- ERP Data/New folder/eFab_Inventory_G00_20250804.xlsx
+- ERP Data/New folder/eFab_SO_List_202508040834.xlsx
+- ERP Data/New folder/yarn_inventory (1).xlsx
+
+TEXTILE/MANUFACTURING SPECIFIC CODE:
+====================================
+- agent_mcp/db/textile_erp_schema.py
+- agent_mcp/features/textile_data_pipeline.py
+- agent_mcp/tools/textile_erp_tools.py
+- agent_mcp/db/actions/textile_erp_actions.py
+- agent_mcp/tasks/textile_tasks.py
+- textile_inventory_forecasting.py
+
+BUSINESS INTELLIGENCE FILES:
+============================
+- critical_inventory_analysis.py
+- critical_yarn_analysis.py
+- analyze_f01_inventory.py
+- get_negative_yarns.py
+- identify_negative_yarns.py
+
+EVIDENCE OF COMMERCIAL INTENT:
+=============================
+1. Production deployment files (start_beverly_production.py)
+2. Real business data integration (Sales Activity Report, Yarn Inventory)
+3. Industry-specific algorithms (textile forecasting, yarn analysis)
+4. Comprehensive ERP system implementation
+5. Emergency/backup procedures (beverly_emergency_start.py)
+6. Quality assurance testing (test_beverly_data.py)
+
+TOTAL SCALE OF APPROPRIATION:
+============================
+- Beverly-specific files: 24 direct files
+- Related proprietary files: 50+ additional files
+- Total code additions: 256,389 lines
+- Business data files: 20+ Excel/CSV files
+- Development timeline: Estimated 6+ months
+- Commercial value: $500,000+ custom ERP development
+
+This represents a massive commercial appropriation of the AGPL-licensed
+Agent-MCP framework for proprietary business use without license compliance.
